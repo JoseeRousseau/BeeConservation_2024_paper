@@ -1,4 +1,6 @@
-# Bee Conservation Analysis for paper published in Frontiers in Ecology and Evolution, 2024
+# **Advancing bee conservation in the US: gaps and opportunities in data collection and reporting**
+Published in Frontiers in Ecology and Evolution, 2024  
+
 Josée S. Rousseau, S. Hollis Woodard, Sarina Jepsen, Brianne Du Clos, Alison Johnston, Bryan N. Danforth, Amanda D. Rodewald
 
 ### ABSTRACT
