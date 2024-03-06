@@ -1,4 +1,5 @@
 # Bee Conservation Analysis for paper published in Frontiers in Ecology and Evolution, 2024
+Josée S. Rousseau, S. Hollis Woodard, Sarina Jepsen, Brianne Du Clos, Alison Johnston, Bryan N. Danforth, Amanda D. Rodewald
 
 ### ABSTRACT
 
@@ -32,6 +33,8 @@ extirpations.
 Based on our analysis, we provide recommendations to improve the
 quality and quantity of data that can be used to detect, understand, and respond
 to changes in wild bee populations.
+
+DOI: 10.5281/zenodo.10783956
 
 Preprint: https://www.biorxiv.org/content/10.1101/2023.12.05.569280v1  
 Paper: Will be added once published (has been accepted)
