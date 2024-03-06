@@ -1,0 +1,370 @@
+---
+title: "mapBees_USA_20240224"
+author: "Josee Rousseau"
+date: "2024-02-24"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '3'
+  html_notebook:
+    fig_caption: no
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+always_allow_html: yes
+---
+
+
+Program name:     mapBees_USA_20240224.rmd 
+
+Program location: ./BioD_Pollination/Programs/BeeData_Conservation_paper/Species_Summaries
+
+Program goal:     Create maps and an histogram of bee sample sizes in USA
+
+Last modified:		February, 2024, by Josee Rousseau
+
+
+```{r libraries, echo = FALSE, warning = FALSE, message = FALSE}
+
+library(here)
+library(spData)
+library(maps)
+library(purrr)
+library(sf)
+library(dplyr)
+library(viridis)
+library(colorBlindness)
+library(mapview)
+library(ggplot2)
+library(scales)
+library(ggpattern)
+library(stringr)
+library(gridExtra)
+
+### Import filtered bee data from SCAN and GBIF
+bees <- read.csv(here("Data", "bees_Chesshire2021_USA_20231011.csv")) # 1,991,840
+
+```
+&nbsp;     
+ 
+#### Define region and hexagon grid
+```{r}
+
+### Extract USA country
+region <- st_transform(us_states, crs = 4326)
+# plot(region[2])
+
+### Dissolve the polygons as one polygon
+regionDiss <- region %>% 
+	 st_union() %>%
+	 st_sf()
+
+### Create hexagonal grid covering USA
+apothem <- 25000 # From center to middle of a side (radius but right angle with side); in meters
+
+createHexaGrid <- function(apothem, locPolygon) {
+
+	loc <- st_transform(locPolygon, crs = 2163) 
+	loc <- st_buffer(loc, dist = 0) # Incase there are some problems with the polygons 
+
+	### Remove borders across states or other boundaries. Important for small states, otherwise large hexagons will never be full size.
+	locDiss <- loc %>% 
+	  st_union() %>%
+	  st_sf()
+	#mapview(locDiss)
+
+	### Create a box and associated range around the polygon
+	boxDistr <- st_bbox(loc)
+	xrange <- boxDistr$xmax - boxDistr$xmin
+	yrange <- boxDistr$ymax - boxDistr$ymin
+
+	### Select size for hexagon and make grid accordingly	
+	grid_spacing <- apothem * 2  # size of hexagon, in units of the CRS (i.e. meters for 5514)
+	numGridCells <- c(xrange/grid_spacing , yrange/grid_spacing) %>% # number of polygons necessary
+  	floor() #ceiling() # rounded up to nearest integer.
+	hexa <- st_make_grid(loc, square = F, n = numGridCells)
+	#mapview(hexa)
+
+	### Clip the grid to the polygon
+	polyGrid <- hexa %>% 
+  	st_intersection(loc) %>% 
+  	st_sf() %>%
+ 		mutate(hID = row_number())
+	#plot(polyGrid[2])
+	#print(mapview(polyGrid))
+	
+  ### Project back WGS84 
+	hexaGrid_WGS84 <- st_transform(polyGrid, crs = 4326)
+	
+	return(hexaGrid_WGS84)
+	
+}
+
+hexaGrid <- map2(.x = apothem, .f = createHexaGrid, .y = regionDiss)
+hexaGrid.sf <- hexaGrid[[1]]
+
+```
+&nbsp;     
+ 
+#### Create a spatial object from the bee dataframe and associate with grid cells 
+```{r}
+
+### Make sure the lat / long info are kept
+bees$Long <- bees$finalLongitude
+bees$Lat <- bees$finalLatitude
+
+bees.sf <- st_as_sf(x = bees,
+           coords = c("Long", "Lat"),
+           crs = 4326)
+
+### Intersect the bees with the hexagon grid
+bees.grid <- sf::st_join(bees.sf, hexaGrid.sf, join = st_intersects)
+
+```
+
+&nbsp;     
+ 
+#### Calculate number of bees and number of species per hexagon for past 10 and all years across USA
+```{r}
+
+### Save spatial object as dataframe
+bees.grid.df <- bees.grid
+st_geometry(bees.grid.df) <- NULL
+
+### Calculate the number of bees and species per hexagon grid cell
+beesPerCell.10yrs <- bees.grid.df %>%
+  filter(year >= 2012 & year <= 2021) %>%
+  group_by(hID) %>%
+  summarise(nBees = n(), nSpp = n_distinct(scientificName), .groups = "drop")
+# 2966 cells
+
+beesPerCell.TTL <- bees.grid.df %>%
+  group_by(hID) %>%
+  summarise(nBees = n(), nSpp = n_distinct(scientificName), .groups = "drop")
+# 3,642 cells
+
+### Merge the results with the grid to plot and fill in NAs by zero (no bees)
+bees.grid.10yrs <- merge(hexaGrid.sf, beesPerCell.10yrs, by = "hID", all.x = TRUE)
+bees.grid.10yrs[is.na(bees.grid.10yrs)] <- 0
+bees.grid.TTL <- merge(hexaGrid.sf, beesPerCell.TTL, by = "hID", all.x = TRUE)
+bees.grid.TTL[is.na(bees.grid.TTL)] <- 0
+
+### Calculate number (percentage) of cells with specific values
+pctCells.value0.10yrs <- dim(bees.grid.10yrs[which(bees.grid.10yrs$nBees == 0),])[1] / dim(bees.grid.10yrs)[1] * 100 # 23.1%
+pctCells.value100.10yrs <- dim(bees.grid.10yrs[which(bees.grid.10yrs$nBees < 100),])[1] / dim(bees.grid.10yrs)[1] * 100 # 85.6%
+pctCells.value0.TTL <- dim(bees.grid.TTL[which(bees.grid.TTL$nBees == 0),])[1] / dim(bees.grid.TTL)[1] * 100 # 5.6%
+pctCells.value100.TTL <- dim(bees.grid.TTL[which(bees.grid.TTL$nBees < 100),])[1] / dim(bees.grid.TTL)[1] * 100 # 57.4%
+
+```
+&nbsp;     
+ 
+#### Add protocol and effort columns representing those piece of info
+```{r}
+### Create a new column called "trapType" to standardize the trap information provided
+bees.grid.df$trapType <- NA
+pans <- c("pan", "Pan", "bowl", "Bowl", "Cup", "cup")
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, paste(pans, collapse = "|")), "pan", bees.grid.df$trapType)
+nets <- c("net", "Net", "sweep", "Sweep", "swept", "dweep")
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, paste(nets, collapse = "|")), "net", bees.grid.df$trapType)
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, "net") & str_detect(bees.grid.df$samplingProtocol, "trap"), "net_trap", bees.grid.df$trapType)
+vanes <- c("vane", "Vane")
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, paste(vanes, collapse = "|")), "vane", bees.grid.df$trapType)
+lights <- c("light", "Light")
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, paste(lights, collapse = "|")), "light", bees.grid.df$trapType)
+pits <- c("pit", "Pit", "PIT")
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, paste(pits, collapse = "|")), "pitfall", bees.grid.df$trapType)
+malaises <- c("malaise", "Malaise", "maliase", "malise", "malasie")
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, paste(malaises, collapse = "|")), "malaise", bees.grid.df$trapType)
+funnels <- c("funnel", "Funnel")
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, paste(funnels, collapse = "|")), "funnel", bees.grid.df$trapType)
+nests <- c("Nest", "nest")
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, paste(nests, collapse = "|")), "nest", bees.grid.df$trapType)
+vaccums <- c("Vac", "VAC", "vac", "suction trap")
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, paste(vaccums, collapse = "|")), "vaccum", bees.grid.df$trapType)
+flights <- c("flight", "Flight", "flright")
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, paste(flights, collapse = "|")), "flight", bees.grid.df$trapType)
+others <- c("Canopy Trap", "Mercury Vapor Lamp", "mercury vapor lamp", "Sticky Trap", "sticky trap", "yellowsticky trap", "Hand", "hand", "pheromone trap", "Pheromone","window trap", "Berlese Extraction", "Beat Sheet", "CO2-baited ABC trap", "SLAM trap", "Upper tier box trap", "cage trap", "beating")
+bees.grid.df$trapType <- ifelse(str_detect(bees.grid.df$samplingProtocol, paste(others, collapse = "|")), "otherTraps", bees.grid.df$trapType)
+bees.grid.df$trapType[is.na(bees.grid.df$trapType)] <- "unknown"
+
+### Assess number of records per trap type
+bees.grid.df.trapType <- bees.grid.df %>%
+  group_by(trapType) %>%
+  summarise(n = n(), .groups = "drop")
+
+### Assess the samplingProtocol that did not get associated to a trapType
+# bees.grid.df.noTrap <- bees.grid.df %>%
+#   filter(trapType == "unknown") %>%
+#   group_by(samplingProtocol) %>%
+#   summarise(n = n(), .groups = "drop")
+
+### Have a look at sampling effort information available
+# as.data.frame(table(bees.grid.df$samplingEffort)) #  
+
+### Add what type of effort (number of traps/observers and/or duration) is associated with the record
+bees.grid.df$effortType <- NA
+bees.grid.df <- mutate(bees.grid.df,
+       effortType = case_when(
+         str_detect(samplingEffort, "bowl") ~ "NumTraps",
+         str_detect(samplingEffort, "minutes") ~ "Duration",
+         # str_detect(samplingEffort, "Minutes & observers") ~ "Duration_NumTraps",
+         TRUE ~ effortType))
+
+### Assess number of records per trap type
+bees.grid.df.effortType <- bees.grid.df %>%
+  group_by(effortType) %>%
+  summarise(n = n(), .groups = "drop")
+
+### Assign effort type "unknown" to all records without information
+bees.grid.df$effortType[is.na(bees.grid.df$effortType)] <- "unknown"
+
+```
+&nbsp;     
+ 
+#### Histogram of the number of records by year and determine categories and colors for graph
+```{r}
+
+### Histogram of the number of records per year
+ggplot(subset(bees.grid.df, year >= 1992 & year <= 2021), aes(x = year)) +
+  geom_histogram(position = "identity", alpha = 0.75, binwidth = 1, stat = "count", fill = "chocolate3") +
+  ylab("Number of record per year") +
+  theme_bw()
+
+ggplot(subset(bees.grid.df, year >= 1992 & year <= 2021 & trapType != "unknown"), aes(x = year)) +
+  geom_histogram(position = "identity", alpha = 0.75, binwidth = 1, stat = "count", fill = "chocolate3") +
+  ylab("Number of record per year - with trap") +
+  theme_bw()
+
+### Categorize the records as having protocol and effort, protocol only, or no protocol or effort (no records have effort and no protocol)
+bees.grid.df$quality <- ifelse(bees.grid.df$trapType != "unknown" & bees.grid.df$effortType != "unknown", "Protocol and effort",
+                       ifelse(bees.grid.df$trapType != "unknown" & bees.grid.df$effortType == "unknown", "Protocol only",
+                       ifelse(bees.grid.df$institutionCode == "iNaturalist", "iNaturalist", "No protocol or effort")))
+
+bees.grid.df$quality <- factor(bees.grid.df$quality,
+                               levels = c("No protocol or effort", "iNaturalist", "Protocol only", "Protocol and effort"))
+
+### Select color palette
+bar.colors2 <- c("black", "black", "grey", "red")
+
+```
+
+&nbsp;     
+ 
+#### Create histogram
+```{r}
+
+grid.arrange(ggplot(subset(bees.grid.df, year >= 1922 & year <= 2021), aes(fill = quality, x = year, pattern = quality)) +
+  geom_bar_pattern(position = "stack", 
+                   pattern_fill = NA, #"black",
+                   pattern_color = "white",
+                   pattern_angle = 45,
+                   pattern_density = 0.025, # Approx. fraction of area the pattern fills
+                   # pattern_frequency = 5,
+                   pattern_size = 0.1, # stroke linewidth
+                   linewidth = 2,  # white lines between stacked bars
+                   pattern_spacing = 0.01) + # Spacing between repetitions of pattern
+  scale_fill_manual(values = bar.colors2) +
+  scale_pattern_manual(name = ,
+                       values = c("No protocol or effort" = "none", 
+                                  "iNaturalist" = "stripe", 
+                                  "Protocol only" = "none", 
+                                  "Protocol and effort" = "none")) +
+  geom_segment(x = 1997, y = 42000,
+               xend = 2018, yend = 3000,
+               lineend = 'square', linejoin = 'mitre',
+               linewith = 1.5,
+               arrow = arrow(length = unit(0.3, "cm")), # , type = "closed"
+               color = "red", show.legend = FALSE) +
+  scale_y_continuous(label = comma) +  # ,  label = function(l) {trans = l / 1000; paste0(trans, "K")}
+  scale_x_continuous(breaks = seq(1922, 2022, 10)) +
+  ylab("Number of records per year") +
+  xlab("Year") +
+  theme_bw() +  # theme_bw()
+  theme(axis.text = element_text(size = 7),
+        axis.title = element_text(size = 8),
+        legend.text = element_text(size = 8),
+        legend.position = "bottom",
+        legend.key.size = unit(4,"mm"),
+        legend.margin = margin(2, 2, 2, 2),
+        legend.box.margin = margin(-7, -7, -7, -7),
+        # legend.justification = "right",
+        legend.title = element_blank(),
+        panel.grid.major = element_line(colour = "grey90", linewidth = 0.2),  # 
+        panel.grid.minor = element_line(colour = "grey90", linewidth = 0.2)) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE)), bottom = "Figure 1. Number of bee records per year, for 1922 to 2021 (few records exist\nprior to 1922; n = 73,695), where the black bar section represents the number of\nrecords without protocol (trap type) nor effort (duration and/or number of\ntraps/volunteers), gray representsrecords with only protocol information, and red represents complete\nrecords containing both protocol and effort information.")
+
+### For FEE publication
+ggsave("Fig1_histNumBeeRecords_20240224.tiff", path = here("Results"), units = "mm", width = 180, height = 90, dpi = 300) 
+
+```
+
+&nbsp;     
+ 
+#### Some background information about iNaturalist records
+```{r}
+
+iNat <- bees.grid.df[which(bees.grid.df$institutionCode == "iNaturalist"), c("institutionCode", "year", "samplingProtocol", "samplingEffort", "trapType")] # 175,503 records
+
+### Percentage of all records from iNaturalist 
+round(175503 / 1991840 * 100, 2) # 8.81%
+
+### Total number of bee records per year
+table(bees.grid.df$year)
+#  1700  1770  1800  1805  1812  1815  1819  1822  1824  1834  1848  1853  1858  1860  1862  1864  1865  1866  1867 
+#    59    12     4     1     1     1     1     1     1     1     2     1     1    15     1     8    28     1     3 
+#    
+#  1870  1871  1872  1873  1874  1875  1876  1877  1878  1879  1880  1881  1882  1883  1884  1885  1886  1887  1888 
+#    10     3    45     1     5     4     3    54    12    36    32    23    40    52    39   418   501   372   566 
+#    
+#  1889  1890  1891  1892  1893  1894  1895  1896  1897  1898  1899  1900  1901  1902  1903  1904  1905  1906  1907 
+#   281   393   902   683  1183  1186   970   898  1996   947  1015  1070  1020  2020  1141  3003  1442  2633  1995 
+#   
+#  1908  1909  1910  1911  1912  1913  1914  1915  1916  1917  1918  1919  1920  1921  1922  1923  1924  1925  1926 
+#  1667  2607  2040  1992  2297  4615  3884  3641  3740  5417  2949  5138  3922  2650  3516  2810  3299  4417  3874 
+#  
+#  1927  1928  1929  1930  1931  1932  1933  1934  1935  1936  1937  1938  1939  1940  1941  1942  1943  1944  1945 
+#  4425  3294  5066  5042  4589  3681  4811  7942  6225  9454  9638  7347  6097  5944  5065  3538  1475  2578  1532 
+#  
+#  1946  1947  1948  1949  1950  1951  1952  1953  1954  1955  1956  1957  1958  1959  1960  1961  1962  1963  1964 
+#  5086  5023  6915 14245 15680 10897 19576 12395 14334 11555 16056  9252 12965 14242 14260 16717 19860 16778 20998 
+#  
+#  1965  1966  1967  1968  1969  1970  1971  1972  1973  1974  1975  1976  1977  1978  1979  1980  1981  1982  1983 
+# 18081 19406 19651 11143 15366 16824 14986 19512 11638 13550 11967 12574 13022 10654 10726 13431 13757 11383 14505 
+# 
+#  1984  1985  1986  1987  1988  1989  1990  1991  1992  1993  1994  1995  1996  1997  1998  1999  2000  2001  2002 
+# 10047  8616  7419  7094  5912  7005  5406  6348  7860  8841  9672 12274  9505 16320 10525  9303 12446 16541 21433 
+# 
+#  2003  2004  2005  2006  2007  2008  2009  2010  2011  2012  2013  2014  2015  2016  2017  2018  2019  2020  2021 
+# 24767 19923 27116 25987 28612 31455 34370 59050 71764 54008 37142 37381 64571 37042 35410 43580 35119 51628 68964 
+
+table(iNat$year)
+#  1929  1940  1943  1946  1950  1957  1959  1960  1966  1969  1972  1978  1981  1983  1984  1987  1988  1991  1996 
+#     1     1     2     1     1     1     3     1     1     2     1     1     1     2     1     2     3     2     1 
+
+#  1997  1999  2000  2002  2003  2004  2005  2006  2007  2008  2009  2010  2011  2012  2013  2014  2015  2016  2017 
+#     2     1     4     3     7    16    36    26    51    41   127   205   242   503   903  1328  1881  4640  7665 
+
+#  2018  2019  2020  2021 
+# 14595 27442 51607 64150 
+
+### For 2019, 2020, 2021, what is the percentage of the records consisting of iNat
+iNat.2019.pct <- 27442 / 35119 * 100 # 78.14 %
+iNat.2020.pct <- 51607 / 51628 * 100 # 99.96 %
+iNat.2021.pct <- 64150 / 68964 * 100 # 93.02 %
+
+### Total number of records from iNat for years 2019 to 2021
+ttlNumRecords.2019to2021 <- 35119+51628+68964
+numRecordsFromiNat.2019to2021 <- 27442+51607+64150
+numRecordsFromiNat.2019to2021/ttlNumRecords.2019to2021*100 # 91.96%
+
+### Values present in samplingProtocol field for iNaturalist records
+table(iNat$samplingProtocol)
+#        
+# 175503   i.e., no record had samplingProtocol information, no record had NA, they were all ""
+
+table(iNat$samplingEffort)
+#       
+# 62382 i.e., no record had samplingEffort information, they were either NA or ""
+
+```

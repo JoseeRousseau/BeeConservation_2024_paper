@@ -1,0 +1,402 @@
+---
+title: "beesPerStateSummaries_20231010"
+author: "Josee Rousseau"
+date: "2023-10-10"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '3'
+  html_notebook:
+    fig_caption: no
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+always_allow_html: yes
+---
+
+
+Program name:     beesPerStateSummaries_20231010.rmd 
+
+Program location: ./BioD_Pollination/Programs/BeeData_Conservation_paper/Species_Summaries
+
+Program goal:     Summarize bee records per state
+
+Last modified:		October 11, 2023, by Josee Rousseau
+
+
+```{r libraries, echo = FALSE, warning = FALSE, message = FALSE}
+
+library(here)
+library(spData)
+library(sf)
+library(dplyr)
+library(tidyverse)
+library(reshape2)
+library(readxl)
+library(mapview)
+
+mapviewOptions(fgb = FALSE)
+
+### Import filtered bee data from SCAN and GBIF
+bees <- read.csv(here("Data", "BeeData_Conservation_paper", "bees_Chesshire2021_USA_20231011.csv")) # 1,991,840
+
+```
+&nbsp;     
+ 
+#### First select the region of interest, here the continguous USA and save the data as a spatial object
+```{r}
+
+### Extract USA region
+region <- st_transform(us_states, crs = 4326)
+plot(region[2])
+
+### Make sure the lat / long info are kept
+bees$Long <- bees$finalLongitude
+bees$Lat <- bees$finalLatitude
+
+bees.sf <- st_as_sf(x = bees,
+           coords = c("Long", "Lat"),
+           crs = 4326)
+
+### Intersect the bees with the USA layer
+bees.states <- sf::st_join(bees.sf, region, join = st_intersects)
+
+### Assess how many records are associated with a state and identify those that are not
+bees.states.in <- bees.states[which(!is.na(bees.states$NAME)),]
+bees.states.out <- bees.states[which(is.na(bees.states$NAME)),]
+# plot(bees.states.out[1]) # These are all in the water around the USA and need to be added
+
+# ### Snap points slightly offshore to their closest state
+bees.states.out.5070 <- st_transform(bees.states.out, crs = 5070) # Need to transform to a meter unit to use max distance
+region.5070 <- st_transform(region, crs = 5070)
+# ### The function below was copied from https://gis.stackexchange.com/questions/357661/snapping-points-outside-a-polygon-to-the-polygons-in-r
+# st_snap_points = function(x, y, max_dist = 100000) {
+#   
+#   if (inherits(x, "sf")) n = nrow(x)
+#   if (inherits(x, "sfc")) n = length(x)
+#   out = do.call(c,
+#                 lapply(seq(n), function(i) {
+#                   nrst = st_nearest_points(st_geometry(x)[i], st_buffer(y, -10)) # JSR: negative border was needed
+#                   # nrst = st_nearest_points(st_geometry(x)[i], y)
+#                   nrst_len = st_length(nrst)
+#                   nrst_mn = which.min(nrst_len)
+#                   if (as.vector(nrst_len[nrst_mn]) > max_dist) return(st_geometry(x)[i])
+#                   return(st_cast(nrst[nrst_mn], "POINT")[2])
+#                 })
+#   )
+#   return(out)
+# }
+### Snap points to contiguous USA if within 50 km (large distance to account for points on nearby islands)
+# out.country.50 <- st_snap_points(bees.states.out.5070, region.5070, 50000) 
+# saveRDS(out.country.50, here("Data", "BeeData_Conservation_paper", "offshoreBeeData_snappedToUSA_20231011.rds"))
+out.country.50 <- readRDS(here("Data", "BeeData_Conservation_paper", "offshoreBeeData_snappedToUSA_20231011.rds"))
+out.country.50b <- out.country.50 %>% 
+  st_as_sf()
+
+### Combine new points to their bee information and temporarily assign layer to new geometry to intersect with states
+out.country.50b <- cbind(out.country.50b, bees.states.out.5070)
+st_geometry(out.country.50b) <- "x"
+
+### Transform the layer back to original projection and intersect with contiguous states
+out.country.50b <- st_transform(out.country.50b, st_crs(region))
+out.country.50b <- out.country.50b[, -which(names(out.country.50b) %in% c("GEOID", "NAME", "REGION", "AREA", "total_pop_10", "total_pop_15"))]
+out.country.50b <- sf::st_join(out.country.50b, region, join = st_intersects)
+out.country.50b.in <- out.country.50b[which(!is.na(out.country.50b$NAME)),] # 81,303 records can bee added back
+
+### Combined the first set of records that are in USA, with second set of snapped records
+st_geometry(out.country.50b.in) <- "geometry"
+out.country.50b.in <- out.country.50b.in[, -which(names(out.country.50b.in) %in% c("x"))] # Remove snapped lat/long
+st_geometry(bees.states.in) <- NULL
+st_geometry(out.country.50b.in) <- NULL
+in.country <- rbind(bees.states.in, out.country.50b.in)
+# 1,991,682 records
+
+remove(bees.sf, bees.states.in, bees.states.out, bees.states.out.5070, out.country.50b, out.country.50b.in, out.country.50, region, region.5070) # bees.states, 
+
+```
+
+&nbsp;     
+ 
+#### Create a summary of the number of record per species and state and the number of unique locations they were collected
+```{r}
+
+### Calculate the number of specimens and unique locations per bee species per state
+beesPerLocPerState <- in.country %>%
+  filter(year >= 2012 & year <= 2021 & !is.na(NAME)) %>%
+  group_by(finalName, NAME, finalLatitude, finalLongitude) %>%
+  summarise(nBeesPerLoc = n(), .groups = "drop") %>%
+  group_by(finalName, NAME) %>%
+  summarise(nLocs = n(), nBees = sum(nBeesPerLoc), .groups = "drop") %>%
+  filter(!is.na(NAME)) %>%
+  mutate(nBeesLocs = paste0("'",nBees, " - ", nLocs)) %>% #"'", 
+  select(finalName, NAME, nBeesLocs) %>%
+  spread(key = NAME, value = nBeesLocs)
+
+```
+&nbsp;     
+ 
+#### Assess the number of bee species detected per state (all years) and per state and decade for the past 50 years.
+```{r}
+
+### Assess the presence and calculate the count of each species per state, for each time period
+beesPerState.2012To2021 <- in.country %>%
+  filter(year >= 2012 & year <= 2021 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(finalName, NAME) %>%
+  summarise(count.2012To2021 = n(), .groups = "drop") %>%
+  mutate(from2012To2021 = 1) 
+
+beesPerState.2002To2011 <- in.country %>%
+  filter(year >= 2002 & year <= 2011 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(finalName, NAME) %>%
+  summarise(count.2002To2011 = n(), .groups = "drop") %>%
+  mutate(from2002To2011 = 1)
+
+beesPerState.1992To2001 <- in.country %>%
+  filter(year >= 1992 & year <= 2001 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(finalName, NAME) %>%
+  summarise(count.1992To2001 = n(), .groups = "drop") %>%
+  mutate(from1992To2001 = 1)
+
+beesPerState.1982To1991 <- in.country %>%
+  filter(year >= 1982 & year <= 1991 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(finalName, NAME) %>%
+  summarise(count.1982To1991 = n(), .groups = "drop") %>%
+  mutate(from1982To1991 = 1)
+
+beesPerState.1972To1981 <- in.country %>%
+  filter(year >= 1972 & year <= 1981 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(finalName, NAME) %>%
+  summarise(count.1972To1981 = n(), .groups = "drop") %>%
+  mutate(from1972To1981 = 1)
+
+beesPerState.pre1971 <- in.country %>%
+  filter(year <= 1971 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(finalName, NAME) %>%
+  summarise(count.pre1971 = n(), .groups = "drop") %>%
+  mutate(pre1971 = 1)
+
+beesPerState.TTL <- in.country %>%
+  filter(!is.na(NAME)) %>%
+  group_by(finalName, NAME) %>%
+  summarise(countTTL = n(), .groups = "drop") %>%
+  mutate(sppTTL = 1)
+
+beesPerState.TTL.min3 <- in.country %>%
+  filter(!is.na(NAME)) %>%
+  group_by(finalName, NAME) %>%
+  summarise(countTTL.min3 = n(), .groups = "drop") %>%
+  mutate(sppTTL.min3 = 1) %>%
+  filter(countTTL.min3 >= 3)
+
+### Combine the information together and replace the NAs by zeros
+allBeePerState <- merge(beesPerState.2012To2021, beesPerState.2002To2011, by = c("finalName", "NAME"), all = TRUE)
+allBeePerState <- merge(allBeePerState, beesPerState.1992To2001, by = c("finalName", "NAME"), all = TRUE)
+allBeePerState <- merge(allBeePerState, beesPerState.1982To1991, by = c("finalName", "NAME"), all = TRUE)
+allBeePerState <- merge(allBeePerState, beesPerState.1972To1981, by = c("finalName", "NAME"), all = TRUE)
+allBeePerState <- merge(allBeePerState, beesPerState.pre1971, by = c("finalName", "NAME"), all = TRUE)
+allBeePerState <- merge(allBeePerState, beesPerState.TTL, by = c("finalName", "NAME"), all = TRUE)
+allBeePerState <- merge(allBeePerState, beesPerState.TTL.min3, by = c("finalName", "NAME"), all = TRUE)
+allBeePerState[is.na(allBeePerState)] <- 0
+
+### Total number of species per state and number of species with at least 3 records prior to 2012
+beesPerState.TTLs <- allBeePerState %>%
+  select(finalName, NAME, sppTTL, sppTTL.min3) %>%
+  group_by(NAME) %>%
+  summarise(sppTTL = sum(sppTTL), sppTTL.min3 = sum(sppTTL.min3), .groups = "drop")
+
+### Summarize the number of species present before 2012 but absent after 2012 
+beesPerState.2012To2021.n <- in.country %>%
+  filter(year >= 2012 & year <= 2021 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(NAME) %>%
+  summarise(nRecords.2012to2021 = n(), .groups = "drop") 
+
+### Summarize the number of species present before 2012 with at least 3 records but absent after 2012 
+beeSppPerState.2012 <- allBeePerState %>%
+  select(finalName, NAME, from2012To2021, sppTTL.min3) %>%
+  filter(sppTTL.min3 == 1) %>%
+  group_by(NAME) %>%
+  summarise(spp.2012to2021 = sum(from2012To2021),
+            sppTTL.min3 = sum(sppTTL.min3), .groups = "drop") %>%
+  left_join(beesPerState.2012To2021.n, by = "NAME") %>%
+  mutate(pctSpp.2012to2021 = round(spp.2012to2021 / sppTTL.min3 * 100, 0),
+         nRecordPerSpp.2012to2021 = round(nRecords.2012to2021 / spp.2012to2021, 1))
+  
+### Same as above, but using other decades to compare results across decades
+beesPerState.2002To2011.n <- in.country %>%
+  filter(year >= 2002 & year <= 2011 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(NAME) %>%
+  summarise(nRecords.2002to2011 = n(), .groups = "drop") 
+beeSppPerState.2002 <- allBeePerState %>%
+  select(finalName, NAME, from2002To2011, sppTTL.min3) %>%
+  filter(sppTTL.min3 == 1) %>%
+  group_by(NAME) %>%
+  summarise(spp.2002to2011 = sum(from2002To2011), 
+            sppTTL.min3 = sum(sppTTL.min3), .groups = "drop") %>%
+  left_join(beesPerState.2002To2011.n, by = "NAME") %>%
+  mutate(pctSpp2002to2011 = round(spp.2002to2011 / sppTTL.min3 * 100, 0), 
+         nRecordPerSpp.2002to2011 = round(nRecords.2002to2011 / spp.2002to2011, 1)) 
+
+beesPerState.1992To2001.n <- in.country %>%
+  filter(year >= 1992 & year <= 2001 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(NAME) %>%
+  summarise(nRecords.1992to2001 = n(), .groups = "drop") 
+beeSppPerState.1992 <- allBeePerState %>%
+  select(finalName, NAME, from1992To2001, sppTTL.min3) %>%
+  filter(sppTTL.min3 == 1) %>%
+  group_by(NAME) %>%
+  summarise(spp.1992to2001 = sum(from1992To2001), 
+            sppTTL.min3 = sum(sppTTL.min3), .groups = "drop") %>%
+  left_join(beesPerState.1992To2001.n, by = "NAME") %>%
+  mutate(pctSpp1992to2001 = round(spp.1992to2001 / sppTTL.min3 * 100, 0), 
+         nRecordPerSpp.1992to2001 = round(nRecords.1992to2001 / spp.1992to2001, 1)) 
+
+beesPerState.1982To1991.n <- in.country %>%
+  filter(year >= 1982 & year <= 1991 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(NAME) %>%
+  summarise(nRecords.1982to1991 = n(), .groups = "drop") 
+beeSppPerState.1982 <- allBeePerState %>%
+  select(finalName, NAME, from1982To1991, sppTTL.min3) %>%
+  filter(sppTTL.min3 == 1) %>%
+  group_by(NAME) %>%
+  summarise(spp.1982to1991 = sum(from1982To1991), 
+            sppTTL.min3 = sum(sppTTL.min3), .groups = "drop") %>%
+  left_join(beesPerState.1982To1991.n, by = "NAME") %>%
+  mutate(pctSpp1982to1991 = round(spp.1982to1991 / sppTTL.min3 * 100, 0), 
+         nRecordPerSpp.1982to1991 = round(nRecords.1982to1991 / spp.1982to1991, 1)) 
+
+beesPerState.1972To1981.n <- in.country %>%
+  filter(year >= 1972 & year <= 1981 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(NAME) %>%
+  summarise(nRecords.1972to1981 = n(), .groups = "drop") 
+beeSppPerState.1972 <- allBeePerState %>%
+  select(finalName, NAME, from1972To1981, sppTTL.min3) %>%
+  filter(sppTTL.min3 == 1) %>%
+  group_by(NAME) %>%
+  summarise(spp.1972to1981 = sum(from1972To1981), 
+            sppTTL.min3 = sum(sppTTL.min3), .groups = "drop") %>%
+  left_join(beesPerState.1972To1981.n, by = "NAME") %>%
+  mutate(pctSpp1972to1981 = round(spp.1972to1981 / sppTTL.min3 * 100, 0), 
+  nRecordPerSpp.1972to1981 = round(nRecords.1972to1981 / spp.1972to1981, 1)) 
+
+beesPerState.pre1971.n <- in.country %>%
+  filter(year <= 1971 & !is.na(NAME) & !is.na(year)) %>%
+  group_by(NAME) %>%
+  summarise(nRecords.pre1971 = n(), .groups = "drop") 
+beeSppPerState.pre1971 <- allBeePerState %>%
+  select(finalName, NAME, pre1971, sppTTL.min3) %>%
+  filter(sppTTL.min3 == 1) %>%
+  group_by(NAME) %>%
+  summarise(spp.pre1971 = sum(pre1971), 
+            sppTTL.min3 = sum(sppTTL.min3), .groups = "drop") %>%
+  left_join(beesPerState.pre1971.n, by = "NAME") %>%
+  mutate(pctSppPre1971 = round(spp.pre1971 / sppTTL.min3 * 100, 0), 
+  nRecordPerSpp.pre1971 = round(nRecords.pre1971 / spp.pre1971, 1)) 
+
+### Combine the two tables and see if results are much different
+beeSppPerState <- merge(beesPerState.TTLs, beeSppPerState.2012, by = c("NAME", "sppTTL.min3"), all = TRUE)
+beeSppPerState <- merge(beeSppPerState, beeSppPerState.2002, by = c("NAME", "sppTTL.min3"), all = TRUE)
+beeSppPerState <- merge(beeSppPerState, beeSppPerState.1992, by = c("NAME", "sppTTL.min3"), all = TRUE)
+beeSppPerState <- merge(beeSppPerState, beeSppPerState.1982, by = c("NAME", "sppTTL.min3"), all = TRUE)
+beeSppPerState <- merge(beeSppPerState, beeSppPerState.1972, by = c("NAME", "sppTTL.min3"), all = TRUE)
+beeSppPerState <- merge(beeSppPerState, beeSppPerState.pre1971, by = c("NAME", "sppTTL.min3"), all = TRUE)
+# names(beeSppPerState)
+beeSppPerState <- beeSppPerState[, c("NAME", "sppTTL", "sppTTL.min3",
+                                     "spp.2012to2021", "spp.2002to2011", "spp.1992to2001", 
+                                     "spp.1982to1991", "spp.1972to1981", "spp.pre1971",
+                                     "nRecords.2012to2021", "nRecords.2002to2011", "nRecords.1992to2001", 
+                                     "nRecords.1982to1991", "nRecords.1972to1981", "nRecords.pre1971", 
+                                     "pctSpp.2012to2021", "pctSpp2002to2011", "pctSpp1992to2001", 
+                                     "pctSpp1982to1991", "pctSpp1972to1981", "pctSppPre1971",
+                                     "nRecordPerSpp.2012to2021", "nRecordPerSpp.2002to2011", "nRecordPerSpp.1992to2001", 
+                                     "nRecordPerSpp.1982to1991", "nRecordPerSpp.1972to1981", "nRecordPerSpp.pre1971")]
+
+### Summarize the data slightly
+beeSppPerState$decade.highSpp <- ifelse(beeSppPerState$pctSpp.2012to2021 >= beeSppPerState$pctSpp2002to2011 &
+                                          beeSppPerState$pctSpp.2012to2021 >= beeSppPerState$pctSpp1992to2001 &
+                                          beeSppPerState$pctSpp.2012to2021 >= beeSppPerState$pctSpp1982to1991 &
+                                          beeSppPerState$pctSpp.2012to2021 >= beeSppPerState$pctSpp1972to1981, "Recent decade", "Older decade") # 19 states have more species in recent decade than in past 5 decades
+beeSppPerState$decade.highSppPerRecord <- ifelse(beeSppPerState$nRecordPerSpp.2012to2021 >= beeSppPerState$nRecordPerSpp.2002to2011 &
+                                          beeSppPerState$nRecordPerSpp.2012to2021 >= beeSppPerState$nRecordPerSpp.1992to2001 &
+                                          beeSppPerState$nRecordPerSpp.2012to2021 >= beeSppPerState$nRecordPerSpp.1982to1991 &
+                                          beeSppPerState$nRecordPerSpp.2012to2021 >= beeSppPerState$nRecordPerSpp.1972to1981, "Recent decade", "Older decade") # 29 states have more spp per records in recent decade than any other decade in past 50 years
+
+### Export results
+write.csv(beeSppPerState, here("Results", "BeeData_Conservation_paper", "numSppPerStates_timePeriods_20240104.csv"), row.names = FALSE)
+
+remove(beesPerState.1972To1981, beesPerState.1972To1981.n, beesPerState.1982To1991, beesPerState.1982To1991.n, beesPerState.1992To2001, beesPerState.1992To2001.n, beesPerState.2002To2011, beesPerState.2002To2011.n, beesPerState.2012To2021, beesPerState.2012To2021.n, beesPerState.pre1971, beesPerState.pre1971.n, beesPerState.TTL, beeSppPerState.1972, beeSppPerState.1982, beeSppPerState.1992, beeSppPerState.2002, beeSppPerState.2012, beeSppPerState.pre1971)
+
+
+```
+&nbsp;     
+ 
+#### Create table representing bee species that are no longer observed in at least one state
+#### Add to the table the number of records in that state and number of records per area to document 'effort'
+```{r}
+
+### Species that are no longer observed in a state, since 2012 (up until 2021)
+# sppObs.2012to2021 <- allBeePerState %>%
+#   mutate(state = ifelse(sppTTL == 1 & from2012To2021 == 0, "Not recently", "Still observed")) %>%
+#   select(finalName, NAME, state) %>%
+#   spread(key = NAME, value = state)
+sppObs.2012to2021.min3 <- allBeePerState %>%
+  mutate(countPast = count.2002To2011 + count.1992To2001 + count.1982To1991 + count.1972To1981 + count.pre1971,
+         state = ifelse(countPast >= 3 & count.2012To2021 == 0, "Not recently", 
+                 ifelse(countPast >= 3 & count.2012To2021 >= 1, "Still observed", 
+                 ifelse(countPast < 3 & count.2012To2021 == 0, "Rarely observed in past only", "Observed recently only")))) %>%
+  select(finalName, NAME, state) %>%
+  spread(key = NAME, value = state)
+
+### Extract number of records per state, area of each state, and calculate number of records per 100 km2
+areaPerState <- data.frame(table(bees.states$NAME, bees.states$AREA))
+areaPerState <- areaPerState[which(areaPerState$Freq > 0),]
+# sum(areaPerState$Freq)
+areaPerState$Var2 <- round(as.numeric(as.character(areaPerState$Var2)), 0)
+areaPerState$recordsPerKm2 <- round(areaPerState$Freq / areaPerState$Var2 * 100, 1)
+
+### Combine all tables together
+areaPerState2 <- areaPerState %>%
+  mutate(finalName = "# bee records") %>%
+  select(Var1, Freq, finalName) %>%
+  spread(key = Var1, value = Freq)
+areaPerState3 <- areaPerState %>%
+  mutate(finalName = "Area (km2)") %>%
+  select(Var1, Var2, finalName) %>%
+  spread(key = Var1, value = Var2)
+areaPerState4 <- areaPerState %>%
+  mutate(finalName = "# records per 100 km2") %>%
+  select(Var1, recordsPerKm2, finalName) %>%
+  spread(key = Var1, value = recordsPerKm2)
+allInfo <- rbind(areaPerState2, areaPerState3, areaPerState4, sppObs.2012to2021.min3)
+
+### The NA values means the species was never observed in that state
+allInfo[is.na(allInfo)] <- "Never observed"
+
+### Keep only bee species that were once observed at least 3 times, but no longer observed, in at least one state
+someSpp <- filter_all(allInfo, any_vars(. == "Not recently"))
+someSpp <- rbind(allInfo[1:3,], someSpp) # 3006 species if min 1 record; 2,449 species if consider min 3 records
+
+### Export
+write.csv(someSpp, here("Results", "BeeData_Conservation_paper", "beeSpp_obs2012to2021_perState_20240103.csv"), row.names = FALSE)
+# In excel:
+# 1) Replace the value "Never observed" by number 1, "Still observed" by number 2, "Rarely observed in past only" by number 3, "Observed recently only" by number 4, and "Not recently" by number 5
+# 2) Select all cells with values 1 to 5 (exclude 4 header rows and first column)
+# 3) In home menu, select "Conditional Formatting" to complete 5 formatting tasks:
+#    a) Select "New rule", style "Classic": 
+#         i) under "Minimum", select Type = "Number", put "1" under "Value", and select color white
+#         ii) under "Midpoint", select Type = "Number", put "2" under "Value", and select medium grey color
+#         iii) under "Maximum", select Type = "Number", put "3" under "Value", and select color black
+#    a) Select "New rule", style "Classic", select "Format only cells that contain", "Specific Text", "containing", add value of "1", select "Custom format..." and under "Font" select color white (so the text becomes white and can't be seen anymore), under Fill and also select a white background color
+#    b) Select "New rule", style "Classic", select "Format only cells that contain", "Specific Text", "containing", add value of "2", select "Custom format..." and under "Font" select color light grey, under Fill and also select a light grey background color
+#    c) Select "New rule", style "Classic", select "Format only cells that contain", "Specific Text", "containing", add value of "3", select "Custom format..." and under "Font" select color dark grey, under Fill and also select a dark grey background color
+#    d) Select "New rule", style "Classic", select "Format only cells that contain", "Specific Text", "containing", add value of "4", select "Custom format..." and under "Font" select color light green, under Fill and also select a light green background color
+#    e) Select "New rule", style "Classic", select "Format only cells that contain", "Specific Text", "containing", add value of "5", select "Custom format..." and under "Font" select color black, under Fill and also select a black background color
+# 4) Select whole table (including headers), in home menu, select "Format as Table" and choose style where all rows have a grey line but are not highlighted (i.e, "White, Table style light 11)
+# 5) Add same grey line across all columns
+# 6) Select top header only (states) and highlight as dark blue
+# 7) Select rows 2 to 4 and highlight rows in light blue
+# 8) Rename worksheet as "spp new absences per state"
+
+```
+
+

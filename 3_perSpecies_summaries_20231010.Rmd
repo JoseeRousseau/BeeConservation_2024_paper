@@ -1,0 +1,508 @@
+---
+title: "perSpecies_summaries_20231010"
+author: "Josee Rousseau"
+date: "2023-10-10"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '3'
+  html_notebook:
+    fig_caption: no
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+always_allow_html: yes
+---
+
+
+Program name:     perSpecies_summaries_20231010.rmd 
+
+Program location: ./BioD_Pollination/Programs/BeeData_Conservation_paper/Species_Summaries
+
+Program goal:     Summarize sample size per data quality (with protocol, etc) and assess if have enough for different analyses (distribution, occupancy, trends)
+
+Last modified:		November 16, 2023, by Josee Rousseau
+
+```{r libraries, echo = FALSE, warning = FALSE, message = FALSE}
+
+library(here)
+library(gdata)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(lubridate)
+library(spData)
+library(sf)
+options(scipen=999)
+
+### Import filtered bee data from SCAN and GBIF
+bees <- read.csv(here("Data", "BeeData_Conservation_paper", "bees_Chesshire2021_USA_20231011.csv")) # 1,991,840 records
+
+### Number of records from 2012 to 2021
+bees.10yrs <- bees %>%
+  filter(year >= 2012 & year <= 2021)
+# 464,845 records
+
+```
+&nbsp;     
+ 
+#### Assess if the records represent 'mature individuals' as defined by IUCN
+```{r}
+
+### Compile the life stages available in the dataset
+table(bees$lifeStage)
+ #           adult    Adult Adult(s)      Egg    Imago Immature    Larva  Unknown 
+ # 1556438    32152   387619        2        2       16       12        2    15597 
+
+### Number and percentage of records missing life state information
+num.Without.LS <- length(bees$lifeStage[which(bees$lifeStage %in% c("", "Unknown"))]) # 1,572,035
+pct.Without.LS <- round(num.Without.LS / dim(bees)[1] * 100, 2) # 78.92 %
+
+### Number and percentage of records being non-adult or unknown
+num.NonAdult <- length(bees$lifeStage[which(bees$lifeStage %in% c("Egg", "Imago", "Immature", "Larva"))]) # 32
+pct.NonAdult <- round(num.NonAdult / dim(bees)[1] * 100, 4) # 0.0016 %
+
+### Number and percentage of records representing adults (mature individuals)
+num.Adult <- length(bees$lifeStage[which(bees$lifeStage %in% c("adult", "Adult"))]) # 419,771 adult life stage
+pct.nAdult <- round(num.Adult / dim(bees)[1] * 100, 2) # 21.07 %
+
+### Percentage of the documented life stages that are adults
+num.With.LS <- num.NonAdult + num.Adult # 419,803 life stages
+pct.Adults.LS <- round(num.Adult / num.With.LS * 100, 2) # 99.99 %
+
+remove(num.Adult, num.NonAdult, num.With.LS, num.Without.LS, pct.nAdult, pct.NonAdult, pct.Without.LS, pct.Adults.LS)
+```
+
+&nbsp;     
+ 
+#### Number of records, per species, for past 10 years and in the dataset    
+```{r}
+
+### Assess number of records with 'individualCount' info
+beesIndCount.2 <- bees %>%
+  filter(individualCount > 1) %>%
+  summarise(nRecords = n(), nBees = sum(individualCount), .groups = "drop")
+# 9,459 records with more than one bee, representing 85,599 bees = 0.48% of records represent more than one bee
+
+beesIndCount.1 <- bees %>%
+  filter(individualCount >= 1) %>%
+  summarise(nRecords = n(), nBees = sum(individualCount), .groups = "drop")
+# 554,850 records with individual count information, representing 630,990 bees = round(554850/1991840*100,2) = only 27.86% of records have count info
+
+beesIndCount.na <- bees %>%
+  filter(individualCount < 1 | is.na(individualCount)) %>%
+  summarise(nRecords = n(), nBees = sum(individualCount), .groups = "drop")
+# 1,436,990 records without individual count information = round(1436990/1991840*100,2) = 72.14% of records
+
+### Assess the number of species sampled per time period
+numBees.10 <- bees %>%
+  filter(year >= 2012 & year <= 2021) %>%
+  group_by(finalName) %>%
+  summarise(nBees.10 = n(), .groups = "drop")
+# 1,528 species
+
+print(paste0("Number of bee species represented in dataset from 2012 to 2021 is ", dim(numBees.10)[1]))
+# [1] "Number of bee species represented in dataset from 2012 to 2021 is 1528"
+
+numBees.TTL <- bees %>%
+  group_by(finalName) %>%
+  summarise(nBees.TTL = n(), .groups = "drop")
+# 3,159 species
+
+print(paste0("Number of bee species represented in dataset is ", dim(numBees.TTL)[1]))
+# [1] "Number of bee species represented in dataset is 3159"
+
+print(paste0("Percentage of bee species known to occur in USA (n = 3,219) that were observed from 2012 to 2021 ", round(dim(numBees.10)[1]/3219*100,2)))
+# [1] "Percentage of bee species known to occur in USA (n = 3,219) that were observed from 2012 to 2021 47.47"
+
+### Number of bee species (all years) observed at least 3 times
+numBees.TTL.min3 <- bees %>%
+  group_by(finalName) %>%
+  summarise(nBees.TTL = n(), .groups = "drop") %>%
+  filter(nBees.TTL >= 3)
+# 2,811 species if count only species with at least 3 records
+
+### Number of species with at least 3 records (all years) that were observed from 2012 to 2021 that were observed
+numBees.min3 <- merge(numBees.TTL.min3, numBees.10, by = "finalName", all = TRUE)
+numBees.min3 <- numBees.min3[which(!is.na(numBees.min3$nBees.TTL)),]
+pctBeeSpp.min3.recent <- round(length(numBees.min3$nBees.10[!is.na(numBees.min3$nBees.10)]) / nrow(numBees.min3) * 100, 1)
+
+```
+&nbsp;     
+ 
+#### Number of decades for which we have records for each species
+```{r}
+
+### What range of years do we have data
+oldestRecord.yr <- min(bees$year, na.rm = TRUE)
+
+### Add a 'decade' category to the dataframe
+bees$decade <- cut(bees$year, breaks = seq(from = 1691, to = 2031, by = 10), labels = paste0(seq(from = 1692, to = 2022, by = 10), "s"))
+
+### Calculate number of unique decade per species
+decadePerSpp <- bees %>%
+  group_by(finalName) %>%
+  summarise(nDecade = n_distinct(decade), .groups = "drop")
+
+```
+&nbsp;     
+ 
+#### Number of records, per species, and trap type, for past 10 years    
+```{r}
+
+### Assess what trap types and effort information is available
+uniqueSamplingProtocol <- bees %>%
+  group_by(samplingProtocol) %>%
+  summarise(n = n(), .groups = "drop")
+# 966 unique sampling protocols listed
+uniqueSamplingEffort <- bees %>%
+  group_by(samplingEffort) %>%
+  summarise(n = n(), .groups = "drop")
+# 10 unique effort listed
+
+### Create a new column called "trapType" to standardize the trap information provided
+bees$trapType <- NA
+pans <- c("pan", "Pan", "bowl", "Bowl", "Cup", "cup")
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, paste(pans, collapse = "|")), "pan", bees$trapType)
+nets <- c("net", "Net", "sweep", "Sweep", "swept", "dweep")
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, paste(nets, collapse = "|")), "net", bees$trapType)
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, "net") & str_detect(bees$samplingProtocol, "trap"), "net_trap", bees$trapType)
+vanes <- c("vane", "Vane")
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, paste(vanes, collapse = "|")), "vane", bees$trapType)
+lights <- c("light", "Light")
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, paste(lights, collapse = "|")), "light", bees$trapType)
+pits <- c("pit", "Pit", "PIT")
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, paste(pits, collapse = "|")), "pitfall", bees$trapType)
+malaises <- c("malaise", "Malaise", "maliase", "malise", "malasie")
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, paste(malaises, collapse = "|")), "malaise", bees$trapType)
+funnels <- c("funnel", "Funnel")
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, paste(funnels, collapse = "|")), "funnel", bees$trapType)
+nests <- c("Nest", "nest")
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, paste(nests, collapse = "|")), "nest", bees$trapType)
+vaccums <- c("Vac", "VAC", "vac", "suction trap")
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, paste(vaccums, collapse = "|")), "vaccum", bees$trapType)
+flights <- c("flight", "Flight", "flright")
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, paste(flights, collapse = "|")), "flight", bees$trapType)
+others <- c("Canopy Trap", "Mercury Vapor Lamp", "mercury vapor lamp", "Sticky Trap", "sticky trap", "yellowsticky trap", "Hand", "hand", "pheromone trap", "Pheromone","window trap", "Berlese Extraction", "Beat Sheet", "CO2-baited ABC trap", "SLAM trap", "Upper tier box trap", "cage trap", "beating")
+bees$trapType <- ifelse(str_detect(bees$samplingProtocol, paste(others, collapse = "|")), "otherTraps", bees$trapType)
+bees$trapType[is.na(bees$trapType)] <- "unknown"
+
+### Assess number of records per trap type
+bees.trapType <- bees %>%
+  group_by(trapType) %>%
+  summarise(n = n(), .groups = "drop")
+
+### Assess the samplingProtocol that did not get associated to a trapType
+bees.noTrap <- bees %>%
+  filter(trapType == "unknown") %>%
+  group_by(samplingProtocol) %>%
+  summarise(n = n(), .groups = "drop")
+
+### Group some trap types
+bees$trapType2 <- bees$trapType
+otherTraps <- c("funnel", "light", "nest", "pitfall", "flight", "vaccum", "vane", "nest") # each have less than 2,500 records
+bees$trapType2[bees$trapType %in% otherTraps] <- "otherTraps"
+
+### Assess number of records per trap type ... combining more categories
+bees.trapType2 <- bees %>%
+  group_by(trapType2) %>%
+  summarise(n = n(), .groups = "drop")
+
+### Count number of bees per species and trap type
+numBeesPerTrap <- bees %>%
+  filter(year >= 2012 & year <= 2021) %>%
+  group_by(finalName, trapType2) %>%
+  summarise(nBees.trap = n(), .groups = "drop") %>%
+  spread(key = trapType2, value = nBees.trap)
+
+### Reorder columns
+names(numBeesPerTrap)
+numBeesPerTrap <- numBeesPerTrap[ ,c("finalName", "net", "pan", "net_trap", "malaise", "otherTraps", "unknown")] 
+
+
+```
+&nbsp;     
+ 
+#### Number of records, per species, with effort, for past 10 years    
+Sampling effort could be number of traps, length of time, number of people
+```{r}
+
+### Have a look at sampling effort information available
+as.data.frame(table(bees$samplingEffort)) #  
+
+# bees$samplingEffort[bees$samplingEffort == "Incomplete Checklist"] <- NA
+
+### Add what type of effort (number of traps/observers and/or duration) is associated with the record
+bees$effortType <- NA
+bees <- mutate(bees,
+       effortType = case_when(
+         str_detect(samplingEffort, "bowl") ~ "NumTraps",
+         str_detect(samplingEffort, "minutes") ~ "Duration",
+         # str_detect(samplingEffort, "Minutes & observers") ~ "Duration_NumTraps",
+          TRUE ~ effortType))
+
+numBeesEffort <- bees %>%
+  filter(year >= 2012 & year <= 2021 & !is.na(samplingEffort) & samplingEffort != "Incomplete Checklist") %>%
+  group_by(finalName, effortType) %>%
+  summarise(nBees.effort = n(), .groups = "drop") %>%
+  filter(!is.na(effortType)) %>%
+  spread(effortType, nBees.effort) %>%
+  replace(is.na(.), 0) %>%
+  mutate(., numBeesWithEffort = Duration + NumTraps) # + Duration_NumTraps 
+# View(numBeesEffort[,c("finalName", "samplingEffort", "year", "effortType")])
+
+print(paste0("A total of ", length(numBeesEffort$finalName[which(numBeesEffort$numBeesWithEffort > 0)]), " bee species have some sort of effort information provided."))
+print(paste0(length(numBeesEffort$finalName[which(numBeesEffort$Duration > 0)]), " bee species have trap duration information."))
+print(paste0(length(numBeesEffort$finalName[which(numBeesEffort$NumTraps > 0)]), " bee species have number of traps or observers information."))
+# print(paste0(length(numBeesEffort$finalName[which(numBeesEffort$Duration_NumTraps > 0)]), " bee species have duration and number of traps or observers information."))
+
+# print("The species with both duration and number of traps or observers are: ")
+# numBeesEffort$finalName[which(numBeesEffort$Duration_NumTraps > 0)]
+
+# [1] "A total of 73 bee species have some sort of effort information provided."
+# [1] "18 bee species have trap duration information."
+# [1] "57 bee species have number of traps or observers information."
+# No records had both duration and number of traps or observers
+
+```
+&nbsp;     
+ 
+#### Number of unique locations, per species, for past 10 years   
+```{r}
+
+numBeesLocs <- bees %>%
+  filter(year >= 2012 & year <= 2021 & !is.na(finalLongitude) & !is.na(finalLatitude)) %>%
+  group_by(finalName, finalLongitude, finalLatitude) %>%
+  summarise(nBeesWithLoc = n(), .groups = "drop")  %>%
+  group_by(finalName) %>%
+  summarise(sumBeesWithLoc = sum(nBeesWithLoc), nLocs = n(), .groups = "drop")
+
+```
+&nbsp;     
+ 
+#### For each species, identify if have enough info to create a polygon of occurrence
+```{r}
+
+### Convex polygon of occurence needs at least 3 unique locations
+convexPoly <- numBeesLocs %>%
+  filter(nLocs >= 3) %>%
+  mutate(convexPoly = "Yes")
+
+print(paste0("Number of species for which we can do a convex polygon of occurence is ", dim(convexPoly)[1]))
+
+# [1] "Number of species for which we can do a convex polygon of occurence is 1071"
+
+round(1071/3219*100,2) # 33.24%
+
+```
+&nbsp;     
+ 
+#### For each species, identify if have enough info to create a species distribution model, using minimum 30 records and 30 unique locations
+```{r}
+
+### It is recommended to have at least 30 observations to complete a species distribution model and 30 unique locations
+### Sample min 30: Wisz et al. 2008. Diversity and Distribution
+### Sample 10, 50 or 100: Stockwell & Peterson. 2001. Ecological Modelling
+### Sample min 30, better if > 50: Seaman et al. 1999. The Journal of Wildlife Management
+### predictions improved much up to 30 locations: Luan et al. 2020. Fisheries Research
+numBeesSampleLocs <- merge(numBees.10, numBeesLocs, by = c("finalName"), all = TRUE)
+distr <- numBeesSampleLocs %>%
+  filter(nBees.10 >= 30 & nLocs >= 30) %>%
+  mutate(distr = "Yes") # 369 records
+
+### Number of species for which we could create a species distribution model
+print(paste0("Number of species for which we can create a species distribution model is ", dim(distr)[1]))
+
+# [1] "Number of species for which we can create a species distribution model is 369"
+round(369/3219*100,2) # 11.46%
+
+### Assess the number of records per genera associated with these species
+distr.genus.pct <- distr %>%
+  mutate(genus = word(finalName , 1  , 1)) %>%
+  group_by(genus) %>%
+  summarise(nSpp = n(), .groups = "drop")
+
+
+```
+&nbsp;     
+ 
+#### For each species, identify if have enough info to create an occupancy model (presence versus non-detection)
+```{r}
+
+### Use map of contiguous USA and create a grid of 10 km and 100 km grid cells
+# region <- st_as_sf(maps::map("world", regions = c("USA"), plot = FALSE, fill = TRUE))
+region <- st_transform(us_states, crs = 4326)
+regionDiss <- region %>% 
+	 st_union() %>% ### Dissolve the polygons as one polygon
+	 st_sf()
+regionDiss2 <- st_transform(regionDiss, crs = 2163) 
+# regionDiss2 <- st_buffer(regionDiss2, dist = 0)
+grid.100km <- st_make_grid(regionDiss2, cellsize = 100000, square = TRUE)
+grid.100km.sf <- st_sf(grid.100km)
+grid.100km.sf$cellID <- c(1:nrow(grid.100km.sf))
+grid.10km <- st_make_grid(regionDiss2, cellsize = 10000, square = TRUE)
+grid.10km.sf <- st_sf(grid.10km)
+grid.10km.sf$cellID <- c(1:nrow(grid.10km.sf))
+# plot(regionDiss2)
+# plot(grid.100km, add = TRUE)
+
+remove(region, regionDiss, regionDiss2)
+
+#####################################################################################
+### First see number of species that could have a 'high quality' occupancy model ####
+#####################################################################################
+
+# Defined as a species that is detected in at least 30 cells of 10 km size using any trap type (beside unknown). A cell is used only if it had 2 visits within 10 years 
+# A visit is defined as a unique date and location
+
+### Assess number of bees captured using known traps, within the past 10 years
+pan.10yrs <- bees %>%
+  filter(trapType != "unknown" & year >= 2012 & year <= 2021) %>%
+  select(finalName, year, month, day, finalLatitude, finalLongitude, trapType2) # 185,034 records
+
+### Some records are missing month and day. Let's keep them but replace the lack of data by zero
+pan.10yrs$month[!(pan.10yrs$month > 0)] <- 0
+pan.10yrs$day[!(pan.10yrs$day > 0)] <- 0
+
+### Save bees as spatial object
+pan.10yrs$Long <- pan.10yrs$finalLongitude
+pan.10yrs$Lat <- pan.10yrs$finalLatitude
+pan.10yrs.sf <- st_as_sf(x = pan.10yrs,
+           coords = c("Long", "Lat"),
+           crs = 4326)
+pan.10yrs.sf <- st_transform(pan.10yrs.sf, st_crs(grid.10km))
+
+### Assess the grid in which these bees belong
+beesPer10km <- sf::st_join(pan.10yrs.sf, grid.10km.sf, join = st_intersects)
+
+### Assess the number of visits per grid and keep cells with at least 2 visits
+st_geometry(beesPer10km) <- NULL
+numVisits.10km <- beesPer10km %>%
+  group_by(cellID) %>%
+  summarise(nVisitsPerCell = n_distinct(year, month, day, finalLatitude, finalLongitude), .groups = "drop") %>%
+  filter(nVisitsPerCell > 1)
+
+### Identify the bee records associated with these cells
+bees.2visits.10km <- merge(beesPer10km, numVisits.10km, by = "cellID", all.y = TRUE) 
+
+### Select species detected in at least 30 grid cells
+bees.spp.highQuality <- bees.2visits.10km %>%
+  group_by(finalName) %>%
+  summarise(nCells = n_distinct(cellID), .groups = "drop") %>%
+  filter(nCells >= 30) %>%
+  mutate(occModel.highQ = "Yes") 
+# 1088 species before selecting for 30 cells. Now 148 species
+round(nrow(bees.spp.highQuality)/3219*100,1) # 4.6%
+
+### Assess the number of records per genera associated with these species
+lowQ.genus.pct <- bees.spp.highQuality %>%
+  mutate(genus = word(finalName , 1  , 1)) %>%
+  group_by(genus) %>%
+  summarise(nSpp = n(), .groups = "drop")
+
+
+####################################################################################
+### See number of species that could have a 'low quality' occupancy model ####
+####################################################################################
+
+# Defined as a species that is detected in at least 30 cells of 100 km size using any type of surveys. A cell is used only if it had 2 visits within 10 years 
+
+### 2 visits: Johnston et al. 2021. Biodiversity Research
+
+### Assess number of bees captured using any traps (even unknown trap), within the past 30 years
+traps.10yrs <- bees %>%
+  filter(year >= 2012 & year <= 2021) %>%
+  select(finalName, year, month, day, finalLatitude, finalLongitude, trapType2) # 471,189 records
+
+### Some records are missing month and day. Let's keep them but replace the lack of data by zero
+traps.10yrs$month[!(traps.10yrs$month > 0)] <- 0
+traps.10yrs$day[!(traps.10yrs$day > 0)] <- 0
+
+### Save bees as spatial object
+traps.10yrs$Long <- traps.10yrs$finalLongitude
+traps.10yrs$Lat <- traps.10yrs$finalLatitude
+traps.10yrs.sf <- st_as_sf(x = traps.10yrs,
+           coords = c("Long", "Lat"),
+           crs = 4326)
+traps.10yrs.sf <- st_transform(traps.10yrs.sf, st_crs(grid.100km))
+
+### Assess the grid in which these bees belong
+beesPer100km <- sf::st_join(traps.10yrs.sf, grid.100km.sf, join = st_intersects)
+
+### Assess the number of visits per grid and keep cells with at least 2 visits
+st_geometry(beesPer100km) <- NULL
+numVisits.100km <- beesPer100km %>%
+  group_by(cellID) %>%
+  summarise(nVisitsPerCell = n_distinct(year, month, day, finalLatitude, finalLongitude), .groups = "drop") %>%
+  filter(nVisitsPerCell > 1)
+
+### Identify the bee records associated with these cells
+bees.2visits.100km <- merge(beesPer100km, numVisits.100km, by = "cellID", all.y = TRUE) # 471,133 records
+
+### Select species detected in at least 30 grid cells
+bees.spp.lowQuality <- bees.2visits.100km %>%
+  group_by(finalName) %>%
+  summarise(nCells = n_distinct(cellID), .groups = "drop") %>%
+  filter(nCells >= 30) %>%
+  mutate(occModel.lowQ = "Yes") 
+# 1,525 species before selecting for 30 cells. Now 194 species
+round(nrow(bees.spp.lowQuality)/3219*100,1) # 6.0%
+
+```
+&nbsp;     
+ 
+#### For each species, identify if have enough info to create a trend analysis ... I don't think this will be feasible.
+```{r}
+
+### Species trends need to have info about trap and effort, data on at least 3 different years
+
+# Trends: min 3 years with presence? Can’t tell absences
+# What assumptions? Same site? If not, we assume all sites have similar trends?
+# Site specific trends?
+# At least 5 years … look at papers
+# From Ali: There’s some stuff in this paper (although it is focussed on biodiversity, not individual species). There are probably more relevant papers, but this one is in my head. ;) https://doi.org/10.1016/j.biocon.2017.07.034
+
+### Papers on the subject
+### - https://doi.org/10.1016/j.biocon.2017.07.034
+### - https://www.sciencedirect.com/science/article/pii/S1470160X19303917?casa_token=FEKBbyYVru8AAAAA:OMn6w19FDCd9_YnKWyiucOzCrcg2Jk8rE7Odmy8sSCkMcS_vb9vkv4pV2BmMiFYu1Ne5wlyZUhg
+### - https://wildlife-onlinelibrary-wiley-com.proxy.library.cornell.edu/doi/epdf/10.2193/0022-541X%282006%2970%5B8%3AOPSFDP%5D2.0.CO%3B
+
+
+```
+&nbsp;     
+ 
+#### Combine information from each analysis
+```{r}
+
+sampleSizes <- numBees.10 %>%
+  # full_join(numBees.30, by = "finalName") %>%
+  full_join(numBees.TTL, by = "finalName") %>%
+  full_join(numBeesLocs, by = "finalName") %>%
+  full_join(decadePerSpp, by = "finalName") %>%
+  full_join(numBeesPerTrap, by = "finalName") %>%
+  full_join(numBeesEffort, by = "finalName")
+sampleSizes <- sampleSizes[, c("finalName","nBees.10","nBees.TTL","nDecade","nLocs","net","pan","net_trap","malaise","otherTraps","unknown", "numBeesWithEffort", "Duration", "NumTraps")] 
+names(sampleSizes) <- c("Scientific name", "# records 2012 to 2021", "Total # records", "# decades",
+                        "# unique locs", "# records - net", "# records - pan", "# bees - net & trap", 
+                        "# records - malaise", "# records - other trap", "# records - unknown trap", "Effort - # records", 
+                        "Effort - duration", "Effort - # traps") 
+
+analyses <- numBeesEffort %>%
+  full_join(convexPoly, by = "finalName") %>%
+  full_join(distr, by = "finalName") %>%
+  full_join(bees.spp.lowQuality, by = "finalName") %>%
+  full_join(bees.spp.highQuality, by = "finalName") 
+
+analyses <- analyses[, c("finalName", "numBeesWithEffort", "Duration", "NumTraps", 
+                         "nLocs.x", "convexPoly", "distr", "occModel.lowQ", "occModel.highQ")]
+names(analyses) <- c("Scientific name", "Effort - # records", "Effort - duration", "Effort - # traps", 
+                     "# unique locs", "Convex polygon", "Distribution model", "Occunpancy model - Low Quality", "Occunpancy model - Higher Quality")
+analyses <- analyses[order(analyses$`Scientific name`),]
+
+### Export data
+write.csv(sampleSizes, here("Results", "BeeData_Conservation_paper", "SCAN_GBIF_SampleSizes_20231011.csv"), row.names = FALSE)
+write.csv(analyses, here("Results", "BeeData_Conservation_paper", "SCAN_GBIF_Analyses_20231011.csv"), row.names = FALSE)
+
+```
