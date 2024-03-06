@@ -34,7 +34,7 @@ Based on our analysis, we provide recommendations to improve the
 quality and quantity of data that can be used to detect, understand, and respond
 to changes in wild bee populations.
 
-DOI: 10.5281/zenodo.10783956
+![image](https://github.com/JoseeRousseau/BeeConservation_2024_paper/assets/39063097/fbe936c0-427d-46a0-b7e9-54378a3ee9a6)
 
 Preprint: https://www.biorxiv.org/content/10.1101/2023.12.05.569280v1  
 Paper: Will be added once published (has been accepted)
