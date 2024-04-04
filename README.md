@@ -38,5 +38,4 @@ to changes in wild bee populations.
 
  DOI: [10.5281/zenodo.10783956](https://zenodo.org/records/10783956)
 
-Preprint: https://www.biorxiv.org/content/10.1101/2023.12.05.569280v1  
-Paper: Will be added once published (has been accepted)
+Paper: https://www.frontiersin.org/articles/10.3389/fevo.2024.1346795/full
